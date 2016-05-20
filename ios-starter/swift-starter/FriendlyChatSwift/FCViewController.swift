@@ -64,6 +64,8 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
   override func viewDidLoad() {
     super.viewDidLoad()
 
+    ref = FIRDatabase.database().reference()
+    
     loadAd()
     self.clientTable.registerClass(UITableViewCell.self, forCellReuseIdentifier: "tableViewCell")
     fetchConfig()
@@ -77,6 +79,8 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
   }
 
   func configureStorage() {
+    storageRef = FIRStorage.storage().reference()
+
   }
 
   func textField(textField: UITextField, shouldChangeCharactersInRange range: NSRange, replacementString string: String) -> Bool {
@@ -87,9 +91,18 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
   }
 
   override func viewWillAppear(animated: Bool) {
+    self.messages.removeAll()
+    // Listen for new messages in the Firebase database
+    _refHandle = self.ref.child("messages").observeEventType(.ChildAdded, withBlock: { (snapshot) -> Void in
+        self.messages.append(snapshot)
+        self.clientTable.insertRowsAtIndexPaths([NSIndexPath(forRow: self.messages.count-1, inSection: 0)], withRowAnimation: .Automatic)
+    })
+
   }
 
   override func viewWillDisappear(animated: Bool) {
+    self.ref.removeObserverWithHandle(_refHandle)
+
   }
 
   // UITableViewDataSource protocol methods
@@ -99,10 +112,35 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
 
   func tableView(tableView: UITableView, cellForRowAtIndexPath indexPath: NSIndexPath) -> UITableViewCell {
     // Dequeue cell
-    let cell: UITableViewCell! = self.clientTable.dequeueReusableCellWithIdentifier("tableViewCell", forIndexPath: indexPath)
-
+    let cell: UITableViewCell! = self.clientTable .dequeueReusableCellWithIdentifier("tableViewCell", forIndexPath: indexPath)
+    // Unpack message from Firebase DataSnapshot
+    let messageSnapshot: FIRDataSnapshot! = self.messages[indexPath.row]
+    let message = messageSnapshot.value as! Dictionary<String, String>
+    let name = message[Constants.MessageFields.name] as String!
+    if let imageUrl = message[Constants.MessageFields.imageUrl] {
+        if imageUrl.hasPrefix("gs://") {
+            FIRStorage.storage().referenceForURL(imageUrl).dataWithMaxSize(INT64_MAX){ (data, error) in
+                if let error = error {
+                    print("Error downloading: \(error)")
+                    return
+                }
+                cell.imageView?.image = UIImage.init(data: data!)
+            }
+        } else if let url = NSURL(string:imageUrl), data = NSData(contentsOfURL: url) {
+            cell.imageView?.image = UIImage.init(data: data)
+        }
+        cell!.textLabel?.text = "sent by: \(name)"
+    } else {
+        let text = message[Constants.MessageFields.text] as String!
+        cell!.textLabel?.text = name + ": " + text
+        cell!.imageView?.image = UIImage(named: "ic_account_circle")
+        if let photoUrl = message[Constants.MessageFields.imageUrl], url = NSURL(string:photoUrl), data = NSData(contentsOfURL: url) {
+            cell!.imageView?.image = UIImage(data: data)
+        }
+    }
     return cell!
-  }
+ }
+    
 
   // UITextViewDelegate protocol methods
   func textFieldShouldReturn(textField: UITextField) -> Bool {
@@ -112,6 +150,14 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
   }
 
   func sendMessage(data: [String: String]) {
+    var mdata = data
+    mdata[Constants.MessageFields.name] = AppState.sharedInstance.displayName
+    if let photoUrl = AppState.sharedInstance.photoUrl  {
+        mdata[Constants.MessageFields.photoUrl] = photoUrl.absoluteString
+    }
+    // Push data to Firebase Database
+    self.ref.child("messages").childByAutoId().setValue(mdata)
+
   }
 
   // MARK: - Image Picker
@@ -130,15 +176,25 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
 
   func imagePickerController(picker: UIImagePickerController,
     didFinishPickingMediaWithInfo info: [String : AnyObject]) {
-      picker.dismissViewControllerAnimated(true, completion:nil)
-
-      let referenceUrl = info[UIImagePickerControllerReferenceURL] as! NSURL
-      let assets = PHAsset.fetchAssetsWithALAssetURLs([referenceUrl], options: nil)
-      let asset = assets.firstObject
-      asset?.requestContentEditingInputWithOptions(nil, completionHandler: { (contentEditingInput, info) in
+    picker.dismissViewControllerAnimated(true, completion:nil)
+    
+    let referenceUrl = info[UIImagePickerControllerReferenceURL] as! NSURL
+    let assets = PHAsset.fetchAssetsWithALAssetURLs([referenceUrl], options: nil)
+    let asset = assets.firstObject
+    asset?.requestContentEditingInputWithOptions(nil, completionHandler: { (contentEditingInput, info) in
         let imageFile = contentEditingInput?.fullSizeImageURL
         let filePath = "\(FIRAuth.auth()?.currentUser?.uid)/\(Int(NSDate.timeIntervalSinceReferenceDate() * 1000))/\(referenceUrl.lastPathComponent!)"
-      })
+        let metadata = FIRStorageMetadata()
+        metadata.contentType = "image/jpeg"
+        self.storageRef.child(filePath)
+            .putFile(imageFile!, metadata: metadata) { (metadata, error) in
+                if let error = error {
+                    print("Error uploading: \(error.description)")
+                    return
+                }
+                self.sendMessage([Constants.MessageFields.imageUrl: self.storageRef.child((metadata?.path)!).description])
+        }
+    })
   }
 
   func imagePickerControllerDidCancel(picker: UIImagePickerController) {
@@ -146,8 +202,14 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
   }
 
   @IBAction func signOut(sender: UIButton) {
-    AppState.sharedInstance.signedIn = false
-    performSegueWithIdentifier(Constants.Segues.FpToSignIn, sender: nil)
+    let firebaseAuth = FIRAuth.auth()
+    do {
+        try firebaseAuth?.signOut()
+        AppState.sharedInstance.signedIn = false
+        performSegueWithIdentifier(Constants.Segues.FpToSignIn, sender: nil)
+    } catch let signOutError as NSError {
+        print ("Error signing out: \(signOutError)")
+    }
   }
 
   func showAlert(title:String, message:String) {
