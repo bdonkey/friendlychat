@@ -126,6 +126,7 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
 
   override func viewWillAppear(animated: Bool) {
     self.messages.removeAll()
+    self.clientTable.reloadData()
     // Listen for new messages in the Firebase database
     _refHandle = self.ref.child("messages").observeEventType(.ChildAdded, withBlock: { (snapshot) -> Void in
       self.messages.append(snapshot)
