@@ -73,7 +73,7 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
   }
 
   func configureStorage() {
-    storageRef = FIRStorage.storage().referenceForURL("gs://<your-firebase-storage-bucket>")
+    storageRef = FIRStorage.storage().referenceForURL("gs://friendlychat-b8b98.appspot.com")
   }
 
   func configureRemoteConfig() {
